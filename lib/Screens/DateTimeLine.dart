@@ -1,10 +1,17 @@
+import 'package:calendar_events_app/AppRoutes.dart';
+import 'package:calendar_events_app/HelperMethods.dart';
+import 'package:calendar_events_app/Screens/AddEvent.dart';
+import 'package:calendar_events_app/Screens/EventDetailScreen.dart';
 import 'package:date_picker_timeline/date_picker_timeline.dart';
 import 'package:device_calendar/device_calendar.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_calendar_carousel/flutter_calendar_carousel.dart'
     show CalendarCarousel;
+import 'package:flutter_slidable/flutter_slidable.dart';
 import 'package:intl/intl.dart';
+
+import '../CalendarManager.dart';
 
 class DateTimeLineScreen extends StatefulWidget {
   @override
@@ -14,25 +21,27 @@ class DateTimeLineScreen extends StatefulWidget {
 class _DateTimeLineScreenState extends State<DateTimeLineScreen> {
   // MARK: Private Properties
   DateTime _selectedDate = DateTime.now();
-  DeviceCalendarPlugin _deviceCalendarPlugin = DeviceCalendarPlugin();
-  List<Calendar> _calendars = [];
-  List<Event> _calendarEvents = [];
-  List<Calendar> get _readOnlyCalendars =>
-      _calendars.where((c) => c.isReadOnly == true).toList();
-  List<Calendar> get _writableCalendars =>
-      _calendars.where((c) => c.isReadOnly == false).toList();
-  ValueNotifier _eventsFetched = ValueNotifier(false);
   // MARK: Initializer
   @override
   void initState() {
-    _retrieveCalendars();
+    CalendarManager.sharedInstance.retrieveCalendars();
     super.initState();
   }
 
   // MARK: Build Functions
   @override
   Widget build(BuildContext context) {
-    return Scaffold(body: SafeArea(child: _body2()));
+    CalendarManager.sharedInstance.fetchEvents(_selectedDate);
+    return Scaffold(
+        floatingActionButton: FloatingActionButton(
+          onPressed: () {
+            AppRoutes.pushWithThen(context, AddEvent(), () {
+              CalendarManager.sharedInstance.fetchEvents(_selectedDate);
+            });
+          },
+          child: Icon(Icons.add),
+        ),
+        body: SafeArea(child: _body2()));
   }
 
   // MARK: Private Widgets
@@ -49,7 +58,6 @@ class _DateTimeLineScreenState extends State<DateTimeLineScreen> {
         child: CalendarCarousel(
           onDayPressed: (DateTime date, List<Event> events) async {
             setState(() => _selectedDate = date);
-            _fetchEvents();
           },
           weekendTextStyle: TextStyle(
             color: Colors.red,
@@ -60,10 +68,10 @@ class _DateTimeLineScreenState extends State<DateTimeLineScreen> {
       );
 
   Widget get _eventsList => ValueListenableBuilder(
-      valueListenable: _eventsFetched,
+      valueListenable: CalendarManager.sharedInstance.eventsFetched,
       builder: (context, isEventFetched, child) => isEventFetched == false
           ? Container()
-          : _calendarEvents.length == 0
+          : CalendarManager.sharedInstance.calendarEvents.length == 0
               ? Center(
                   child: Text(
                     "No Events Found",
@@ -71,78 +79,77 @@ class _DateTimeLineScreenState extends State<DateTimeLineScreen> {
                   ),
                 )
               : ListView.builder(
-                  itemCount: _calendarEvents.length,
+                  itemCount:
+                      CalendarManager.sharedInstance.calendarEvents.length,
                   shrinkWrap: true,
                   itemBuilder: (BuildContext context, int index) {
-                    Event event = _calendarEvents[index];
-                    String startDate = _formatDateTime(
+                    Event event =
+                        CalendarManager.sharedInstance.calendarEvents[index];
+                    String startDate = HelperMethods.formatDateTime(
                         DateTime.parse(event.start!.toIso8601String()));
                     String? endDate;
                     if (event.end != null) {
-                      endDate = _formatDateTime(
+                      endDate = HelperMethods.formatDateTime(
                           DateTime.parse(event.end!.toIso8601String()));
                     } else {
                       endDate = null;
                     }
-                    return Card(
-                      color: Colors.blueAccent,
-                      child: ListTile(
-                        title: Text(event.title ?? "",
-                            style:
-                                TextStyle(color: Colors.white, fontSize: 14)),
-                        subtitle: Text(
-                            "Start: ${startDate}\nEnd: ${endDate ?? ""}",
-                            style:
-                                TextStyle(color: Colors.white, fontSize: 14)),
-                        isThreeLine: true,
+                    return InkWell(
+                      onTap: () => AppRoutes.pushWithThen(
+                          context, EventDetailScreen(event), () {
+                        CalendarManager.sharedInstance
+                            .fetchEvents(_selectedDate);
+                      }),
+                      child: Card(
+                        color: Colors.blueAccent,
+                        child: Slidable(
+                          actionPane: SlidableDrawerActionPane(),
+                          actionExtentRatio: 0.25,
+                          secondaryActions: [
+                            IconSlideAction(
+                              caption: 'Edit',
+                              color: Colors.indigo,
+                              icon: Icons.edit,
+                              onTap: () => print('Edit'),
+                            ),
+                            IconSlideAction(
+                              caption: 'Delete',
+                              color: Colors.red,
+                              icon: Icons.delete,
+                              onTap: () async {
+                                bool result = await CalendarManager
+                                    .sharedInstance
+                                    .deleteEvent(
+                                        event.calendarId, event.eventId);
+                                if (result) {
+                                  HelperMethods.showSnackBar(
+                                      context, 'Event Deleted');
+                                  CalendarManager.sharedInstance
+                                      .fetchEvents(_selectedDate);
+                                } else {
+                                  HelperMethods.showSnackBar(
+                                      context, 'Cannot Delete the event.');
+                                }
+                                setState(() {});
+                              },
+                            ),
+                          ],
+                          child: ListTile(
+                            title: Text(event.title ?? "",
+                                style: TextStyle(
+                                    color: Colors.white, fontSize: 14)),
+                            subtitle: Text(
+                                "Start: ${startDate}\nEnd: ${endDate ?? ""}",
+                                style: TextStyle(
+                                    color: Colors.white, fontSize: 14)),
+                            isThreeLine: true,
+                          ),
+                        ),
                       ),
                     );
                   },
                 ));
 
   // MARK: Private Methods
-  void _retrieveCalendars() async {
-    try {
-      var permissionsGranted = await _deviceCalendarPlugin.hasPermissions();
-      if (permissionsGranted.isSuccess &&
-          (permissionsGranted.data == null ||
-              permissionsGranted.data == false)) {
-        permissionsGranted = await _deviceCalendarPlugin.requestPermissions();
-        if (!permissionsGranted.isSuccess ||
-            permissionsGranted.data == null ||
-            permissionsGranted.data == false) {
-          return;
-        }
-      }
 
-      final calendarsResult = await _deviceCalendarPlugin.retrieveCalendars();
-      _calendars = calendarsResult.data as List<Calendar>;
-      _fetchEvents();
-    } on PlatformException catch (e) {
-      print(e);
-    }
-  }
-
-  Future _retrieveCalendarEvents(
-      String? forCalendarID, DateTime startDate) async {
-    var calendarEventsResult = await _deviceCalendarPlugin.retrieveEvents(
-        forCalendarID,
-        RetrieveEventsParams(
-            startDate: startDate, endDate: startDate.add(Duration(days: 1))));
-    _calendarEvents.addAll(calendarEventsResult.data!.toList());
-  }
-
-  void _fetchEvents() async {
-    _calendarEvents.clear();
-    _eventsFetched.value = false;
-    for (Calendar calendar in _calendars) {
-      await _retrieveCalendarEvents(calendar.id, _selectedDate);
-    }
-    _eventsFetched.value = true;
-  }
-
-  String _formatDateTime(DateTime dateTime) {
-    DateFormat dateFormat = DateFormat("MMM dd, yyyy HH:mm:ss");
-    return dateFormat.format(dateTime);
-  }
 }
